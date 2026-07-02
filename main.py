@@ -2,6 +2,7 @@ import pygame
 import random
 import math
 import sys
+import numpy as np
 
 # Simulation Window Constants
 WINDOW_WIDTH = 1200
@@ -48,6 +49,78 @@ def generate_fish_color():
     return (r, g, b)
 
 
+class NeuralNetwork:
+    """
+    Lightweight Feed-Forward Neural Network brain for the agents.
+    Uses basic matrix math with NumPy.
+    Dimensions: 5 inputs -> 8 hidden neurons -> 2 outputs.
+    """
+    def __init__(self, input_size=5, hidden_size=8, output_size=2):
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.output_size = output_size
+        
+        # Initialize weights and biases randomly in range [-1.0, 1.0]
+        # w1: input -> hidden weights
+        # b1: hidden biases
+        self.w1 = np.random.uniform(-1.0, 1.0, (input_size, hidden_size))
+        self.b1 = np.random.uniform(-1.0, 1.0, (1, hidden_size))
+        
+        # w2: hidden -> output weights
+        # b2: output biases
+        self.w2 = np.random.uniform(-1.0, 1.0, (hidden_size, output_size))
+        self.b2 = np.random.uniform(-1.0, 1.0, (1, output_size))
+
+    def forward(self, inputs):
+        """
+        Runs inputs through the network. Returns a flat array of size 2.
+        All layers use tanh activations (squashed output values to [-1.0, 1.0]).
+        """
+        # Format inputs into shape (1, 5)
+        x = np.array(inputs).reshape(1, -1)
+        
+        # Layer 1: Input to Hidden
+        h = np.tanh(np.dot(x, self.w1) + self.b1)
+        
+        # Layer 2: Hidden to Output
+        out = np.tanh(np.dot(h, self.w2) + self.b2)
+        
+        return out.flatten()
+
+    def get_weights(self):
+        """
+        Flattens all weights and biases into a single 1D numpy array.
+        This provides direct access for mutation and crossover in Stage 6.
+        """
+        return np.concatenate([
+            self.w1.flatten(),
+            self.b1.flatten(),
+            self.w2.flatten(),
+            self.b2.flatten()
+        ])
+
+    def set_weights(self, flat_weights):
+        """
+        Reconstructs matrices and bias vectors from a flat 1D array.
+        Used for updating the brain with evolved weights.
+        """
+        idx = 0
+        w1_size = self.input_size * self.hidden_size
+        self.w1 = flat_weights[idx : idx + w1_size].reshape(self.input_size, self.hidden_size)
+        idx += w1_size
+        
+        b1_size = self.hidden_size
+        self.b1 = flat_weights[idx : idx + b1_size].reshape(1, self.hidden_size)
+        idx += b1_size
+        
+        w2_size = self.hidden_size * self.output_size
+        self.w2 = flat_weights[idx : idx + w2_size].reshape(self.hidden_size, self.output_size)
+        idx += w2_size
+        
+        b2_size = self.output_size
+        self.b2 = flat_weights[idx : idx + b2_size].reshape(1, self.output_size)
+
+
 class Agent:
     """
     Base Agent class encapsulating position, velocity, heading, and 
@@ -69,7 +142,7 @@ class Agent:
         self.vx = personal_max_speed * math.cos(heading)
         self.vy = personal_max_speed * math.sin(heading)
         
-        # Wander states (used as defaults when no external steer is active)
+        # Wander states (used by Predator or by default)
         self.target_heading = heading
         self.wander_timer = random.randint(0, WANDER_INTERVAL)
 
@@ -165,7 +238,7 @@ class Agent:
 
 class Fish(Agent):
     """
-    Prey Fish agent. Contains sensors, wandering behavior, and a flee reflex.
+    Prey Fish agent driven independently by a Neural Network brain.
     """
     def __init__(self, x, y, heading, speed_factor, color):
         super().__init__(
@@ -173,6 +246,17 @@ class Fish(Agent):
             max_speed=MAX_SPEED, max_accel=MAX_ACCELERATION, max_turn_rate=MAX_TURN_RATE,
             color=color, length=14, width=8
         )
+        
+        # =====================================================================
+        # STAGE 5: Independent Neural Network Brain
+        # =====================================================================
+        self.brain = NeuralNetwork(input_size=5, hidden_size=8, output_size=2)
+        
+        # =====================================================================
+        # STAGE 6 HOOK: Fitness Score Tracker
+        # - Increments for every frame of survival to drive genetic selection.
+        # =====================================================================
+        self.fitness = 0
         
         # Stage 3 Sensor Fields
         self.sensor_nearest_dist = float('inf')   # Distance to nearest neighbor
@@ -183,8 +267,13 @@ class Fish(Agent):
         self.sensor_predator_dist = float('inf')  # Distance to predator
         self.sensor_predator_angle = 0.0          # Relative angle to predator (radians)
         
-        # State variables
-        self.is_fleeing = False                   # Flag indicating flee reflex override
+        # Caching network outputs and calculations for debugging and movement
+        self.last_steer_output = 0.0              # Latest turn neuron output
+        self.last_accel_output = 0.0              # Latest throttle neuron output
+        self.ax_input = 0.0                       # Calculated steering acceleration x
+        self.ay_input = 0.0                       # Calculated steering acceleration y
+        
+        # Debug helper references
         self.nearest_neighbor = None              # Reference to closest fish object
         self.nearest_neighbor_dist = float('inf')  # True unclamped toroidal distance to nearest fish
 
@@ -222,7 +311,7 @@ class Fish(Agent):
         self.nearest_neighbor = nearest_fish
         self.nearest_neighbor_dist = min_dist
         
-        # Populate nearest neighbor sensors (Stage 5 network inputs)
+        # Populate nearest neighbor sensors
         if nearest_fish is not None and min_dist <= VISION_RADIUS:
             self.sensor_nearest_dist = min_dist
             abs_angle = math.atan2(best_dy, best_dx)
@@ -235,9 +324,7 @@ class Fish(Agent):
         # Calculate wall distance along the heading vector
         self.sensor_wall_dist = self.get_distance_to_edge()
         
-        # =====================================================================
-        # STAGE 4: Predator Sensing & Flight Reflex
-        # =====================================================================
+        # Calculate predator distance/angle sensors
         p_dx = predator.x - self.x
         if p_dx > WINDOW_WIDTH / 2: p_dx -= WINDOW_WIDTH
         elif p_dx < -WINDOW_WIDTH / 2: p_dx += WINDOW_WIDTH
@@ -255,46 +342,64 @@ class Fish(Agent):
             self.sensor_predator_angle = (rel_angle_p + math.pi) % (2 * math.pi) - math.pi
         else:
             self.sensor_predator_angle = 0.0
-            
-        # Flight trigger: predator is within vision and is closest sensed thing
-        # TEMPORARY: This is rules-based flight, to be replaced by learned Neural Avoidance in Stage 5
-        self.is_fleeing = False
-        if dist_p <= VISION_RADIUS and dist_p <= self.nearest_neighbor_dist:
-            self.is_fleeing = True
-            # Set target heading directly away from predator
-            self.target_heading = math.atan2(p_dy, p_dx) + math.pi
+
+    def think(self):
+        """
+        Feeds normalized sensors to the brain, runs forward inference,
+        and translates outputs to steering acceleration forces.
+        """
+        # =====================================================================
+        # Normalization Schema:
+        # 1. Neighbor Dist: [0.0, 1.0] (1.0 = nothing within vision radius)
+        # 2. Neighbor Angle: [-1.0, 1.0] (fraction of pi)
+        # 3. Wall Dist: [0.0, 1.0] (capped at 1.0 by dividing by screen width)
+        # 4. Predator Dist: [0.0, 1.0] (1.0 = predator unseen/out of range)
+        # 5. Predator Angle: [-1.0, 1.0] (fraction of pi)
+        # =====================================================================
+        norm_dist = min(self.sensor_nearest_dist / VISION_RADIUS, 1.0)
+        norm_angle = self.sensor_nearest_angle / math.pi
+        norm_wall = min(self.sensor_wall_dist / 1200.0, 1.0)
+        norm_pred_dist = min(self.sensor_predator_dist / VISION_RADIUS, 1.0)
+        norm_pred_angle = self.sensor_predator_angle / math.pi
+        
+        inputs = [norm_dist, norm_angle, norm_wall, norm_pred_dist, norm_pred_angle]
+        
+        # Forward pass through individual Neural Network
+        outputs = self.brain.forward(inputs)
+        self.last_steer_output = outputs[0]  # relative steering value in [-1.0, 1.0]
+        self.last_accel_output = outputs[1]  # throttle adjustment value in [-1.0, 1.0]
+        
+        # Map outputs to desired heading: current heading + steer * max turn rate
+        desired_heading = self.heading + self.last_steer_output * self.max_turn_rate
+        
+        # Map outputs to desired speed: scale personal max speed from 0% to 100% using throttle
+        personal_max_speed = self.speed_factor * MAX_SPEED
+        desired_speed = ((self.last_accel_output + 1.0) / 2.0) * personal_max_speed
+        
+        # Calculate desired velocity components
+        desired_vx = desired_speed * math.cos(desired_heading)
+        desired_vy = desired_speed * math.sin(desired_heading)
+        
+        # Steering force = Desired Velocity - Current Velocity
+        self.ax_input = desired_vx - self.vx
+        self.ay_input = desired_vy - self.vy
+        
+        # Clamp steering force to MAX_ACCELERATION
+        accel_mag = math.hypot(self.ax_input, self.ay_input)
+        if accel_mag > self.max_accel:
+            self.ax_input = (self.ax_input / accel_mag) * self.max_accel
+            self.ay_input = (self.ay_input / accel_mag) * self.max_accel
 
     def update(self):
         """
-        Updates fish velocity and position based on wander or flee steering goals.
+        Updates fish position and velocity using steering forces generated by the brain,
+        and accumulates survival frames (fitness).
         """
-        if not self.is_fleeing:
-            # Simple wander logic
-            self.wander_timer -= 1
-            if self.wander_timer <= 0:
-                self.wander_timer = random.randint(int(WANDER_INTERVAL * 0.7), int(WANDER_INTERVAL * 1.3))
-                self.target_heading = self.heading + random.uniform(-WANDER_FORCE, WANDER_FORCE)
-        else:
-            # Fleeing target heading was calculated in sense()
-            pass
-
-        # Calculate steering force (acceleration vector) towards target heading
-        personal_max_speed = self.speed_factor * MAX_SPEED
-        desired_vx = personal_max_speed * math.cos(self.target_heading)
-        desired_vy = personal_max_speed * math.sin(self.target_heading)
+        # Apply motion physics
+        self.move(self.ax_input, self.ay_input)
         
-        # Steering force = Desired Velocity - Current Velocity
-        ax = desired_vx - self.vx
-        ay = desired_vy - self.vy
-        
-        # Clamp acceleration magnitude to MAX_ACCELERATION
-        accel_mag = math.hypot(ax, ay)
-        if accel_mag > self.max_accel:
-            ax = (ax / accel_mag) * self.max_accel
-            ay = (ay / accel_mag) * self.max_accel
-            
-        # Execute base agent physics movement
-        self.move(ax, ay)
+        # Increment fitness score for genetic algorithm evaluation (surviving another frame)
+        self.fitness += 1
 
     def get_distance_to_edge(self):
         """
@@ -397,7 +502,7 @@ def main():
     
     # Setup window and clock
     screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-    pygame.display.set_caption("NeuroSwarm - Stage 4 Predator Simulation")
+    pygame.display.set_caption("NeuroSwarm - Stage 5 Neural Simulation")
     clock = pygame.time.Clock()
     
     # Load default font for HUD rendering
@@ -407,6 +512,7 @@ def main():
     predator = Predator(WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2, random.uniform(0, 2 * math.pi))
     
     # Spawn 100 fish with random positions, initial headings, speed factors, and silver/blue colors
+    # Each fish spawns with its own independent random NeuralNetwork brain weights.
     fish_school = []
     for _ in range(NUM_FISH):
         x = random.uniform(0, WINDOW_WIDTH)
@@ -435,11 +541,15 @@ def main():
             
         predator.hunt(fish_school)
         
-        # 3. Update Physics & Logic
+        # 3. Independent Brains Forward Inference
+        for fish in fish_school:
+            fish.think()
+        
+        # 4. Update Physics & Logic
         for fish in fish_school:
             fish.update()
             
-        # 4. Catch Detection (collisions checked using toroidal boundaries)
+        # 5. Catch Detection (collisions checked using toroidal boundaries)
         surviving_fish = []
         for fish in fish_school:
             dx = fish.x - predator.x
@@ -459,7 +569,7 @@ def main():
         fish_remaining = len(fish_school)
         fish_eaten_count = NUM_FISH - fish_remaining
             
-        # 5. Rendering
+        # 6. Rendering
         # Clear screen with dark background
         screen.fill(BG_COLOR)
         
@@ -505,12 +615,16 @@ def main():
                 # Highlight the selected fish
                 pygame.draw.circle(screen, (241, 196, 15), (int(selected_fish.x), int(selected_fish.y)), 10, 1)
                 
-                # Render selected fish sensors HUD
+                # Render current network outputs right above the fish
+                outputs_text = font.render(f"S: {selected_fish.last_steer_output:+.2f} | A: {selected_fish.last_accel_output:+.2f}", True, (241, 196, 15))
+                screen.blit(outputs_text, (int(selected_fish.x) - 50, int(selected_fish.y) - 25))
+                
+                # Render selected fish sensors & fitness HUD
                 sensor_text_1 = font.render(f"Nearest Dist: {selected_fish.sensor_nearest_dist:.1f}", True, (200, 200, 200))
                 sensor_text_2 = font.render(f"Nearest Angle: {selected_fish.sensor_nearest_angle:.2f} rad", True, (200, 200, 200))
                 sensor_text_3 = font.render(f"Wall Dist: {selected_fish.sensor_wall_dist:.1f}", True, (200, 200, 200))
                 sensor_text_4 = font.render(f"Predator Dist: {selected_fish.sensor_predator_dist:.1f}", True, (200, 200, 200))
-                sensor_text_5 = font.render(f"Fleeing: {selected_fish.is_fleeing}", True, (231, 76, 60) if selected_fish.is_fleeing else (200, 200, 200))
+                sensor_text_5 = font.render(f"Survival Frames (Fitness): {selected_fish.fitness}", True, (241, 196, 15))
                 screen.blit(sensor_text_1, (10, WINDOW_HEIGHT - 110))
                 screen.blit(sensor_text_2, (10, WINDOW_HEIGHT - 90))
                 screen.blit(sensor_text_3, (10, WINDOW_HEIGHT - 70))
