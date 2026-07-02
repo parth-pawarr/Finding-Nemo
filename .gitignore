@@ -1,4 +1,4 @@
-# Python bytecode
+# Python bytecode & caching
 __pycache__/
 *.py[cod]
 *$py.class
@@ -16,7 +16,16 @@ env/
 # IDE/editor settings
 .vscode/
 .idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
 
 # OS files
 .DS_Store
 Thumbs.db
+
+# NeuroSwarm Simulation Artifacts
+best_genome.json
+generation_history.csv
