@@ -3,6 +3,9 @@ import random
 import math
 import sys
 import numpy as np
+import json
+import csv
+import time
 
 # Simulation Window Constants
 WINDOW_WIDTH = 1200
@@ -245,8 +248,11 @@ class Fish(Agent):
         # Brain Network (5 inputs -> 8 hidden -> 2 outputs)
         self.brain = NeuralNetwork(input_size=5, hidden_size=8, output_size=2)
         
-        # Fitness Score (Accumulates over lifetime; stops on death)
+        # Fitness Score
         self.fitness = 0.0
+        
+        # Stage 7 loaded champion flag (for visual marking)
+        self.is_champion = False
         
         # Stage 3 Sensor Fields
         self.sensor_nearest_dist = float('inf')
@@ -336,7 +342,6 @@ class Fish(Agent):
         Feeds normalized sensors to the brain, runs forward inference,
         and translates outputs to steering acceleration forces.
         """
-        # Normalizations
         norm_dist = min(self.sensor_nearest_dist / VISION_RADIUS, 1.0)
         norm_angle = self.sensor_nearest_angle / math.pi
         norm_wall = min(self.sensor_wall_dist / 1200.0, 1.0)
@@ -347,8 +352,8 @@ class Fish(Agent):
         
         # Forward pass
         outputs = self.brain.forward(inputs)
-        self.last_steer_output = outputs[0]  # steer relative change [-1.0, 1.0]
-        self.last_accel_output = outputs[1]  # throttle [-1.0, 1.0]
+        self.last_steer_output = outputs[0]
+        self.last_accel_output = outputs[1]
         
         # Desired heading
         desired_heading = self.heading + self.last_steer_output * self.max_turn_rate
@@ -373,28 +378,30 @@ class Fish(Agent):
         """
         Moves the fish based on neural decisions and updates its fitness score.
         """
-        # Apply physics movement
         self.move(self.ax_input, self.ay_input)
         
-        # =====================================================================
-        # STAGE 6: Fitness Accumulation
-        # =====================================================================
-        # 1. Survival time reward
+        # Fitness Accumulation
         self.fitness += FITNESS_SURVIVAL_REWARD
         
-        # 2. Movement speed reward (rewards exploring, penalizes freeze camping)
         current_speed = math.hypot(self.vx, self.vy)
         self.fitness += current_speed * FITNESS_SPEED_MULT
         
-        # 3. Wall proximity penalty (discourages hugs/trapped corners)
         if self.sensor_wall_dist < FITNESS_WALL_PENALTY_THRESHOLD:
             wall_ratio = self.sensor_wall_dist / FITNESS_WALL_PENALTY_THRESHOLD
             penalty = (1.0 - wall_ratio) * FITNESS_WALL_PENALTY_MAX
             self.fitness -= penalty
             
-        # Ensure fitness stays non-negative
         if self.fitness < 0.0:
             self.fitness = 0.0
+
+    def draw(self, surface):
+        """
+        Extends draw to render a special highlight if the fish is a loaded champion.
+        """
+        super().draw(surface)
+        if self.is_champion:
+            # Draw visual highlight ring around the loaded champion
+            pygame.draw.circle(surface, (255, 215, 0), (int(self.x), int(self.y)), 12, 1)
 
     def get_distance_to_edge(self):
         """
@@ -514,9 +521,10 @@ def mutate(weights):
     mutated_w[mask] += noise
     return mutated_w
 
-def evolve_population(entire_population):
+def evolve_population(entire_population, loaded_weights=None):
     """
     Generates 100 new fish by keeping elites and breeding/mutating others.
+    Optionally injects a loaded champion genome.
     """
     # Sort by fitness descending
     sorted_pop = sorted(entire_population, key=lambda f: f.fitness, reverse=True)
@@ -526,8 +534,15 @@ def evolve_population(entire_population):
     
     new_genomes = []
     
-    # Elites are cloned directly without modifications
-    for i in range(elite_count):
+    # Inject loaded champion weights if available
+    champion_injected = False
+    if loaded_weights is not None:
+        new_genomes.append(loaded_weights)
+        champion_injected = True
+        
+    # Preserve remaining elites
+    start_idx = 1 if champion_injected else 0
+    for i in range(start_idx, elite_count):
         new_genomes.append(sorted_pop[i].brain.get_weights())
         
     # Breed the rest
@@ -543,20 +558,197 @@ def evolve_population(entire_population):
         
         new_genomes.append(child_w)
         
-    # Spawn 100 new fish with evolved genomes
+    # Spawn 100 new fish
     new_fish_school = []
     for i in range(NUM_FISH):
         x = random.uniform(0, WINDOW_WIDTH)
         y = random.uniform(0, WINDOW_HEIGHT)
         heading = random.uniform(0, 2 * math.pi)
         speed_factor = random.uniform(SPEED_VARIATION_MIN, 1.0)
-        color = generate_fish_color()
         
-        fish = Fish(x, y, heading, speed_factor, color)
-        fish.brain.set_weights(new_genomes[i])
+        # Visual marking for injected champion
+        if i == 0 and champion_injected:
+            color = (255, 215, 0)  # Distinct Gold
+            fish = Fish(x, y, heading, speed_factor, color)
+            fish.brain.set_weights(new_genomes[i])
+            fish.is_champion = True
+        else:
+            color = generate_fish_color()
+            fish = Fish(x, y, heading, speed_factor, color)
+            fish.brain.set_weights(new_genomes[i])
+            
         new_fish_school.append(fish)
         
     return new_fish_school
+
+
+# =====================================================================
+# STAGE 7: Analytics, HUD Panel, and Portability
+# =====================================================================
+def save_genome(weights, fitness, generation, filepath="best_genome.json"):
+    """
+    Serializes a flat weight array and training metadata to a JSON file.
+    """
+    try:
+        data = {
+            "weights": weights.tolist(), # Convert numpy array to list
+            "fitness": float(fitness),
+            "generation": int(generation),
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        with open(filepath, "w") as f:
+            json.dump(data, f, indent=4)
+        print(f"[SUCCESS] Saved champion genome to {filepath} (Fitness: {fitness:.2f}, Gen: {generation})")
+    except Exception as e:
+        print(f"[ERROR] Failed to save genome: {e}")
+
+def load_genome(filepath="best_genome.json"):
+    """
+    Loads weights from a saved JSON genome file.
+    """
+    try:
+        with open(filepath, "r") as f:
+            data = json.load(f)
+        weights = np.array(data["weights"])
+        print(f"[SUCCESS] Loaded genome from {filepath} (Fitness: {data['fitness']:.2f}, Saved Gen: {data['generation']})")
+        return weights
+    except Exception as e:
+        print(f"[ERROR] Failed to load genome from {filepath}: {e}")
+        return None
+
+def export_stats_csv(stats_history, filepath="generation_history.csv"):
+    """
+    Exports the recorded generation metrics history to a CSV file.
+    """
+    try:
+        if not stats_history:
+            print("[WARNING] No generation statistics to export yet.")
+            return
+        keys = stats_history[0].keys()
+        with open(filepath, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=keys)
+            writer.writeheader()
+            writer.writerows(stats_history)
+        print(f"[SUCCESS] Exported stats history CSV to {filepath}")
+    except Exception as e:
+        print(f"[ERROR] Failed to export stats CSV: {e}")
+
+def draw_fitness_graph(surface, stats_history):
+    """
+    Draws a fitness progression line graph (best vs avg) to a cached Pygame surface.
+    Updates only on generation changes.
+    """
+    surface.fill((20, 25, 40, 220))  # Semi-transparent navy background
+    width, height = surface.get_size()
+    padding = 22
+    plot_w = width - 2 * padding
+    plot_h = height - 2 * padding
+    
+    # Outer border
+    pygame.draw.rect(surface, (100, 110, 130), (0, 0, width, height), 2)
+    
+    font = pygame.font.SysFont(None, 14)
+    
+    if not stats_history:
+        # Placeholder text
+        placeholder = font.render("Waiting for Gen 1 completion...", True, (150, 160, 180))
+        surface.blit(placeholder, (padding + 10, height / 2 - 8))
+        return
+
+    # Auto-scale y-axis based on historical data maxima
+    max_fit = max(max(g["best_fitness"], g["avg_fitness"]) for g in stats_history)
+    max_val = max(1.0, max_fit * 1.1)  # Leave 10% headroom
+    
+    num_gens = len(stats_history)
+    
+    # Draw horizontal grid lines and y-axis labels
+    for i in range(4):
+        ratio = i / 3.0
+        y_pos = padding + plot_h - (ratio * plot_h)
+        pygame.draw.line(surface, (50, 60, 80), (padding, y_pos), (padding + plot_w, y_pos), 1)
+        
+        lbl_val = ratio * max_val
+        lbl = font.render(f"{int(lbl_val)}", True, (120, 130, 150))
+        surface.blit(lbl, (2, y_pos - 6))
+        
+    # Map data to coordinate coordinates
+    best_coords = []
+    avg_coords = []
+    
+    for idx, gen in enumerate(stats_history):
+        x_ratio = idx / (num_gens - 1) if num_gens > 1 else 0.5
+        x_pos = padding + x_ratio * plot_w
+        
+        best_y = padding + plot_h - (gen["best_fitness"] / max_val) * plot_h
+        avg_y = padding + plot_h - (gen["avg_fitness"] / max_val) * plot_h
+        
+        best_coords.append((x_pos, best_y))
+        avg_coords.append((x_pos, avg_y))
+        
+    # Draw Average line (cyan)
+    if len(avg_coords) > 1:
+        pygame.draw.lines(surface, (52, 152, 219), False, avg_coords, 2)
+    elif len(avg_coords) == 1:
+        pygame.draw.circle(surface, (52, 152, 219), (int(avg_coords[0][0]), int(avg_coords[0][1])), 3)
+        
+    # Draw Best line (yellow)
+    if len(best_coords) > 1:
+        pygame.draw.lines(surface, (241, 196, 15), False, best_coords, 2)
+    elif len(best_coords) == 1:
+        pygame.draw.circle(surface, (241, 196, 15), (int(best_coords[0][0]), int(best_coords[0][1])), 3)
+        
+    # Title and Legend
+    title_font = pygame.font.SysFont(None, 15, bold=True)
+    title = title_font.render("Fitness Progression", True, (200, 200, 200))
+    surface.blit(title, (padding, 4))
+    
+    best_leg = font.render("Yellow: Best", True, (241, 196, 15))
+    avg_leg = font.render("Cyan: Avg", True, (52, 152, 219))
+    surface.blit(best_leg, (width - 150, 4))
+    surface.blit(avg_leg, (width - 75, 4))
+    
+    # X-axis Labels
+    start_lbl = font.render("Gen 1", True, (120, 130, 150))
+    end_lbl = font.render(f"Gen {num_gens}", True, (120, 130, 150))
+    surface.blit(start_lbl, (padding, height - 16))
+    surface.blit(end_lbl, (width - padding - 40, height - 16))
+
+def draw_hud(screen, font, fps, gen, time_rem, fish_rem, best_fit_current, all_time_best):
+    """
+    Renders a unified status details HUD in the top-left corner.
+    """
+    panel_w = 260
+    panel_h = 175
+    
+    hud_surface = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+    hud_surface.fill((20, 25, 40, 220))  # Semi-transparent navy panel
+    pygame.draw.rect(hud_surface, (100, 110, 130), (0, 0, panel_w, panel_h), 2)
+    
+    lines = [
+        ("FPS:", f"{int(fps)}", (200, 200, 200)),
+        ("Generation:", f"{gen}", (200, 200, 200)),
+        ("Time Remaining:", f"{time_rem:.1f}s", (200, 200, 200)),
+        ("Fish Alive:", f"{fish_rem} / 100", (46, 204, 113) if fish_rem > 0 else (231, 76, 60)),
+        ("Current Gen Best:", f"{best_fit_current:.1f}", (241, 196, 15)),
+        ("All-Time Best:", f"{all_time_best:.1f}", (241, 196, 15)),
+        ("Mutation Rate/Str:", f"{MUTATION_RATE * 100:.0f}% / {MUTATION_STRENGTH:.2f}", (155, 89, 182))
+    ]
+    
+    y_offset = 10
+    text_font = pygame.font.SysFont(None, 15)
+    
+    for label, val, color in lines:
+        lbl_r = text_font.render(label, True, (170, 180, 190))
+        val_r = text_font.render(val, True, color)
+        hud_surface.blit(lbl_r, (15, y_offset))
+        hud_surface.blit(val_r, (140, y_offset))
+        y_offset += 20
+        
+    # Controls help list
+    help_txt = text_font.render("Keys: [D] Dbg | [G] Graph | [S] Save | [L] Load | [E] CSV", True, (130, 140, 150))
+    hud_surface.blit(help_txt, (10, panel_h - 22))
+    
+    screen.blit(hud_surface, (10, 10))
 
 
 def main():
@@ -566,7 +758,7 @@ def main():
     
     # Setup window and clock
     screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-    pygame.display.set_caption("NeuroSwarm - Stage 6 Neuroevolution")
+    pygame.display.set_caption("NeuroSwarm - Stage 7 Analytics & Genome Portability")
     clock = pygame.time.Clock()
     
     # Load default font
@@ -575,12 +767,21 @@ def main():
     # Evolution variables
     generation_num = 1
     generation_timer = 0
-    stats_history = []  # List of dicts for Stage 7 Analytics
+    stats_history = []
+    
+    # Global state genomes variables
+    all_time_best_weights = None
+    all_time_best_fitness = 0.0
+    loaded_champion_weights = None
+    
+    # Graph caching surface setup
+    graph_surface = pygame.Surface((300, 200), pygame.SRCALPHA)
+    draw_fitness_graph(graph_surface, stats_history) # Draw initial empty graph
     
     # Spawn predator in the center
     predator = Predator(WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2, random.uniform(0, 2 * math.pi))
     
-    # Spawn Initial Generation (Gen 1 - Random brains)
+    # Spawn Initial Generation (Gen 1)
     fish_school = []
     for _ in range(NUM_FISH):
         x = random.uniform(0, WINDOW_WIDTH)
@@ -590,10 +791,12 @@ def main():
         color = generate_fish_color()
         fish_school.append(Fish(x, y, heading, speed_factor, color))
         
-    dead_fish_pool = []  # Accumulate fish eaten this generation
+    dead_fish_pool = []
     
     debug_mode = False
+    show_graph = False
     running = True
+    
     while running:
         # 1. Event Handling
         for event in pygame.event.get():
@@ -604,6 +807,30 @@ def main():
                     running = False
                 elif event.key == pygame.K_d:
                     debug_mode = not debug_mode
+                elif event.key == pygame.K_g:
+                    show_graph = not show_graph
+                elif event.key == pygame.K_s:
+                    # Save currently cached all-time best
+                    # Scan current active population for a potential updates first
+                    active_pop = fish_school + dead_fish_pool
+                    if active_pop:
+                        c_best_fish = max(active_pop, key=lambda f: f.fitness)
+                        if c_best_fish.fitness > all_time_best_fitness:
+                            all_time_best_fitness = c_best_fish.fitness
+                            all_time_best_weights = c_best_fish.brain.get_weights()
+                            
+                    if all_time_best_weights is not None:
+                        save_genome(all_time_best_weights, all_time_best_fitness, generation_num, "best_genome.json")
+                    else:
+                        print("[WARNING] No genome has been evaluated yet to save.")
+                elif event.key == pygame.K_l:
+                    # Load weights from disk
+                    loaded_w = load_genome("best_genome.json")
+                    if loaded_w is not None:
+                        loaded_champion_weights = loaded_w
+                elif event.key == pygame.K_e:
+                    # Export statistics to CSV
+                    export_stats_csv(stats_history, "generation_history.csv")
                     
         # 2. Update Sensors
         for fish in fish_school:
@@ -632,7 +859,6 @@ def main():
             
             dist = math.hypot(dx, dy)
             if dist <= PREDATOR_CATCH_RADIUS:
-                # Eaten! Lock final fitness and store in dead pool
                 dead_fish_pool.append(fish)
             else:
                 surviving_fish.append(fish)
@@ -645,7 +871,6 @@ def main():
         generation_ended = (len(fish_school) == 0) or (generation_timer >= GENERATION_TIME_LIMIT_FRAMES)
         
         if generation_ended:
-            # 6. Evolve Generation
             entire_population = fish_school + dead_fish_pool
             
             # Extract Gen stats
@@ -653,6 +878,13 @@ def main():
             best_fit = max(fitness_scores) if fitness_scores else 0.0
             avg_fit = sum(fitness_scores) / len(fitness_scores) if fitness_scores else 0.0
             survivor_count = len(fish_school)
+            
+            # Update all-time best tracker
+            if best_fit > all_time_best_fitness:
+                all_time_best_fitness = best_fit
+                # Find the actual fish that achieved this fitness
+                best_agent = max(entire_population, key=lambda f: f.fitness)
+                all_time_best_weights = best_agent.brain.get_weights()
             
             # Log metrics
             stats_history.append({
@@ -662,12 +894,6 @@ def main():
                 "survivors": survivor_count
             })
             
-            # =================================================================
-            # STAGE 7 HOOK: Analytics & Data Save
-            # - Write stats_history into files or plot graphics.
-            # - Save/load evolved genomes to disk using neural set_weights.
-            # =================================================================
-            
             # Print transition stats to terminal console
             print(f"--- Generation {generation_num} Summary ---")
             print(f"Best Fitness: {best_fit:.2f}")
@@ -675,8 +901,12 @@ def main():
             print(f"Survivors: {survivor_count} / 100")
             print("-----------------------------------")
             
-            # Breed next generation
-            fish_school = evolve_population(entire_population)
+            # Invalidate/re-render cached graph surface
+            draw_fitness_graph(graph_surface, stats_history)
+            
+            # Breed next generation (inject loaded weights if set)
+            fish_school = evolve_population(entire_population, loaded_champion_weights)
+            loaded_champion_weights = None  # Consume champion injection
             dead_fish_pool = []
             
             # Reset Predator
@@ -689,7 +919,7 @@ def main():
             # Reset timers and increment counter
             generation_num += 1
             generation_timer = 0
-            continue  # Proceed to next frame immediately
+            continue
             
         # Get live best fitness for stats display
         active_pop = fish_school + dead_fish_pool
@@ -699,7 +929,7 @@ def main():
         time_remaining_sec = max(0.0, (GENERATION_TIME_LIMIT_FRAMES - generation_timer) / FPS)
         fish_remaining = len(fish_school)
             
-        # 7. Rendering
+        # 6. Rendering
         screen.fill(BG_COLOR)
         
         # Draw fish
@@ -721,10 +951,8 @@ def main():
                     selected_fish = fish
                     
             if selected_fish is not None:
-                # selected fish vision
                 pygame.draw.circle(screen, (80, 100, 120), (int(selected_fish.x), int(selected_fish.y)), VISION_RADIUS, 1)
                 
-                # selected fish nearest neighbor
                 if selected_fish.nearest_neighbor is not None:
                     is_in_range = selected_fish.nearest_neighbor_dist <= VISION_RADIUS
                     line_color = (46, 204, 113) if is_in_range else (127, 140, 141)
@@ -733,20 +961,16 @@ def main():
                                      (int(selected_fish.nearest_neighbor.x), int(selected_fish.nearest_neighbor.y)), 2)
                     pygame.draw.circle(screen, line_color, (int(selected_fish.nearest_neighbor.x), int(selected_fish.nearest_neighbor.y)), 5, 1)
                 
-                # selected fish wall sensor
                 end_x = selected_fish.x + selected_fish.sensor_wall_dist * math.cos(selected_fish.heading)
                 end_y = selected_fish.y + selected_fish.sensor_wall_dist * math.sin(selected_fish.heading)
                 pygame.draw.line(screen, (230, 126, 34), (int(selected_fish.x), int(selected_fish.y)), (int(end_x), int(end_y)), 2)
                 pygame.draw.circle(screen, (230, 126, 34), (int(end_x), int(end_y)), 4)
                 
-                # selected fish highlight
                 pygame.draw.circle(screen, (241, 196, 15), (int(selected_fish.x), int(selected_fish.y)), 10, 1)
                 
-                # Render current network outputs right above the fish
                 outputs_text = font.render(f"S: {selected_fish.last_steer_output:+.2f} | A: {selected_fish.last_accel_output:+.2f}", True, (241, 196, 15))
                 screen.blit(outputs_text, (int(selected_fish.x) - 50, int(selected_fish.y) - 25))
                 
-                # selected fish sensors & fitness details HUD
                 sensor_text_1 = font.render(f"Nearest Dist: {selected_fish.sensor_nearest_dist:.1f}", True, (200, 200, 200))
                 sensor_text_2 = font.render(f"Nearest Angle: {selected_fish.sensor_nearest_angle:.2f} rad", True, (200, 200, 200))
                 sensor_text_3 = font.render(f"Wall Dist: {selected_fish.sensor_wall_dist:.1f}", True, (200, 200, 200))
@@ -758,9 +982,7 @@ def main():
                 screen.blit(sensor_text_4, (10, WINDOW_HEIGHT - 50))
                 screen.blit(sensor_text_5, (10, WINDOW_HEIGHT - 30))
                 
-            # Predator debug
             pygame.draw.circle(screen, (150, 50, 50), (int(predator.x), int(predator.y)), PREDATOR_VISION_RADIUS, 1)
-            
             if predator.target_fish is not None:
                 is_chasing = predator.target_fish_dist <= PREDATOR_VISION_RADIUS
                 line_color = (231, 76, 60) if is_chasing else (127, 140, 141)
@@ -769,26 +991,19 @@ def main():
                                  (int(predator.target_fish.x), int(predator.target_fish.y)), 2)
                 pygame.draw.circle(screen, line_color, (int(predator.target_fish.x), int(predator.target_fish.y)), 8, 1)
 
-        # Draw HUD Stats in top-left
+        # Draw Consolidated HUD (top-left)
         fps_val = clock.get_fps()
-        fps_text = font.render(f"FPS: {int(fps_val)}", True, FPS_COLOR)
-        screen.blit(fps_text, (10, 10))
+        draw_hud(screen, font, fps_val, generation_num, time_remaining_sec, fish_remaining, best_fitness_current, max(all_time_best_fitness, best_fitness_current))
         
-        gen_text = font.render(f"Generation: {generation_num}", True, (200, 200, 200))
-        screen.blit(gen_text, (10, 30))
-        
-        timer_text = font.render(f"Time Remaining: {time_remaining_sec:.1f}s", True, (200, 200, 200))
-        screen.blit(timer_text, (10, 50))
-        
-        count_text = font.render(f"Fish Remaining: {fish_remaining} / 100", True, (46, 204, 113))
-        screen.blit(count_text, (10, 70))
-        
-        fit_text = font.render(f"Best Fitness: {best_fitness_current:.1f}", True, (241, 196, 15))
-        screen.blit(fit_text, (10, 90))
-        
-        if debug_mode:
-            dbg_ind = font.render("DEBUG MODE ACTIVE", True, (241, 196, 15))
-            screen.blit(dbg_ind, (10, 115))
+        # Draw Cached Fitness Graph Overlay (bottom-right) if toggled on
+        if show_graph:
+            screen.blit(graph_surface, (WINDOW_WIDTH - 320, WINDOW_HEIGHT - 220))
+            
+        # =====================================================================
+        # STAGE 8 HOOK: Training-Mode (Headless / Fast-Forward Simulation)
+        # - This is where Stage 8 will implement fast-forward loops or disable
+        #   screen rendering options to dramatically increase training throughput.
+        # =====================================================================
             
         # Flip display and tick clock
         pygame.display.flip()
