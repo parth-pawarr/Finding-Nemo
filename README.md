@@ -144,4 +144,4 @@ This repository holds the completion of **Prototype 1** (Stages 1–8).
 
 ## 📄 License
 
-This project is licensed under the terms of the MIT License (to be verified).
+This project is licensed under the terms of the MIT License.
