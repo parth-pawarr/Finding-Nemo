@@ -42,3 +42,10 @@ FITNESS_WALL_PENALTY_MAX = 3.0       # Maximum penalty subtracted when touching 
 # 7. Aesthetics / Colors (RGB tuples)
 BG_COLOR = (10, 15, 30)         # Dark ocean deep navy
 FPS_COLOR = (200, 200, 200)     # Light grey HUD text
+
+# 8. Obstacles & Collision Config (Phase 1)
+OBSTACLE_COLOR = (45, 50, 60)
+FISH_COLLISION_RADIUS = 6.0
+PREDATOR_COLLISION_RADIUS = 10.0
+COLLISION_SUBSTEPS = 4
+

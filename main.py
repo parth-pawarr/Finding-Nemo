@@ -12,6 +12,8 @@ from entities import Fish, Predator
 from evolution import evolve_population
 from analytics import draw_fitness_graph, draw_hud, draw_help_panel, export_stats_csv
 from persistence import save_genome, load_genome
+from environment.obstacle import get_fixed_obstacles
+
 
 # Setup module-level logger
 logger = logging.getLogger(__name__)
@@ -21,7 +23,7 @@ CURRENT_WIDTH = config.WINDOW_WIDTH
 CURRENT_HEIGHT = config.WINDOW_HEIGHT
 
 
-def main():
+def main(): 
     global CURRENT_WIDTH, CURRENT_HEIGHT
     
     # Configure standard Python logging to output milestones to stdout console
@@ -59,6 +61,9 @@ def main():
     graph_surface = pygame.Surface((300, 200), pygame.SRCALPHA)
     draw_fitness_graph(graph_surface, stats_history)  # Draw initial empty graph
     
+    # Initialize static obstacles
+    obstacles = get_fixed_obstacles()
+    
     # Spawn predator in the center
     predator = Predator(CURRENT_WIDTH / 2, CURRENT_HEIGHT / 2, random.uniform(0, 2 * math.pi))
     
@@ -81,6 +86,9 @@ def main():
     training_mode = False
     draw_details = True
     show_help = True  # Help menu shown by default for discoverability
+    collision_mode = 'STOP'
+    manual_mode = False
+
     
     # Timer for training mode HUD updates
     last_training_hud_update_ms = 0
@@ -153,20 +161,34 @@ def main():
                     # Headless Fast Training Mode Toggle
                     training_mode = not training_mode
                     logger.info(f"Fast training mode toggled: {training_mode}")
+                elif event.key == pygame.K_c:
+                    if draw_details:
+                        modes = ['OFF', 'STOP', 'SLIDE']
+                        idx = (modes.index(collision_mode) + 1) % len(modes)
+                        collision_mode = modes[idx]
+                        logger.info(f"Collision mode set to: {collision_mode}")
+                elif event.key == pygame.K_m:
+                    if draw_details:
+                        manual_mode = not manual_mode
+                        logger.info(f"Manual control mode toggled: {manual_mode}")
                     
         # 2. Update Sensors
         for fish in fish_school:
             fish.sense(fish_school, predator, CURRENT_WIDTH, CURRENT_HEIGHT)
             
-        predator.hunt(fish_school, CURRENT_WIDTH, CURRENT_HEIGHT)
+        predator.hunt(fish_school, CURRENT_WIDTH, CURRENT_HEIGHT, obstacles, collision_mode)
         
         # 3. Brain Inference
-        for fish in fish_school:
-            fish.think(CURRENT_WIDTH, CURRENT_HEIGHT)
+        keys = pygame.key.get_pressed()
+        for idx, fish in enumerate(fish_school):
+            if manual_mode and idx == 0:
+                fish.think_manual(keys)
+            else:
+                fish.think(CURRENT_WIDTH, CURRENT_HEIGHT)
         
         # 4. Update Physics
         for fish in fish_school:
-            fish.update(CURRENT_WIDTH, CURRENT_HEIGHT)
+            fish.update(CURRENT_WIDTH, CURRENT_HEIGHT, obstacles, collision_mode)
             
         # 5. Catch Detection & Eaten Pool Accumulation (using toroidal math helpers)
         surviving_fish = []
@@ -252,7 +274,7 @@ def main():
                 
                 screen.fill(config.BG_COLOR)
                 fps_val = clock.get_fps()
-                draw_hud(screen, font, fps_val, generation_num, time_remaining_sec, fish_remaining, best_fitness_current, max(all_time_best_fitness, best_fitness_current))
+                draw_hud(screen, font, fps_val, generation_num, time_remaining_sec, fish_remaining, best_fitness_current, max(all_time_best_fitness, best_fitness_current), collision_mode, manual_mode)
                 
                 # Training notification indicator
                 train_lbl = font.render("FAST FF-TRAINING ACTIVE (Agent Rendering Suspended)", True, (231, 76, 60))
@@ -268,8 +290,16 @@ def main():
             # Clear screen with dark background
             screen.fill(config.BG_COLOR)
             
+            # Draw static obstacles
+            for obstacle in obstacles:
+                obstacle.draw(screen)
+
+            
             # Draw fish school
-            for fish in fish_school:
+            for idx, fish in enumerate(fish_school):
+                if manual_mode and idx == 0:
+                    # Highlight manually controlled fish
+                    pygame.draw.circle(screen, (255, 140, 0), (int(fish.x), int(fish.y)), 12, 2)
                 fish.draw(screen, draw_details)
                 
             # Draw predator
@@ -331,7 +361,7 @@ def main():
             # Draw HUD Overlays if details are enabled
             if draw_details:
                 fps_val = clock.get_fps()
-                draw_hud(screen, font, fps_val, generation_num, time_remaining_sec, fish_remaining, best_fitness_current, max(all_time_best_fitness, best_fitness_current))
+                draw_hud(screen, font, fps_val, generation_num, time_remaining_sec, fish_remaining, best_fitness_current, max(all_time_best_fitness, best_fitness_current), collision_mode, manual_mode)
                 
                 # Draw Keybindings Reference Panel if toggled active
                 if show_help:

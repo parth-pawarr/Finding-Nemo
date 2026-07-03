@@ -13,7 +13,7 @@ class Agent:
     Base Agent class encapsulating position, velocity, heading, and 
     common physics-based steering and boundary wrap-around behavior.
     """
-    def __init__(self, x, y, heading, speed_factor, max_speed, max_accel, max_turn_rate, color, length, width):
+    def __init__(self, x, y, heading, speed_factor, max_speed, max_accel, max_turn_rate, color, length, width, radius=6.0):
         """
         Initializes an Agent with position, velocity, and physics constraints.
         """
@@ -26,6 +26,7 @@ class Agent:
         self.color = color
         self.length = length
         self.width = width
+        self.radius = radius
         
         # Initialize velocity vector based on spawn heading and personal max speed
         personal_max_speed = self.speed_factor * self.max_speed
@@ -44,7 +45,7 @@ class Agent:
         """
         return math.atan2(self.vy, self.vx)
 
-    def move(self, ax, ay, world_w, world_h):
+    def move(self, ax, ay, world_w, world_h, obstacles=None, collision_mode='OFF'):
         """
         Updates velocity vector and position using acceleration, capping top-speed
         and clamping heading change rate.
@@ -78,10 +79,13 @@ class Agent:
         self.vx = speed * math.cos(actual_heading)
         self.vy = speed * math.sin(actual_heading)
         
-        self.x += self.vx
-        self.y += self.vy
-        
-        self.handle_boundaries(world_w, world_h)
+        if obstacles and collision_mode != 'OFF':
+            from physics.collision_solver import resolve_agent_movement
+            resolve_agent_movement(self, obstacles, world_w, world_h, collision_mode, N=config.COLLISION_SUBSTEPS)
+        else:
+            self.x += self.vx
+            self.y += self.vy
+            self.handle_boundaries(world_w, world_h)
 
     def handle_boundaries(self, world_w, world_h):
         """
@@ -129,7 +133,7 @@ class Fish(Agent):
         super().__init__(
             x=x, y=y, heading=heading, speed_factor=speed_factor,
             max_speed=config.MAX_SPEED, max_accel=config.MAX_ACCELERATION, max_turn_rate=config.MAX_TURN_RATE,
-            color=color, length=14, width=8
+            color=color, length=14, width=8, radius=config.FISH_COLLISION_RADIUS
         )
         
         # Brain Network (5 inputs -> 8 hidden -> 2 outputs)
@@ -246,7 +250,45 @@ class Fish(Agent):
             self.ax_input = (self.ax_input / accel_mag) * self.max_accel
             self.ay_input = (self.ay_input / accel_mag) * self.max_accel
 
-    def update(self, world_w, world_h):
+    def think_manual(self, keys):
+        """
+        Manually steers the fish using keyboard arrow keys.
+        """
+        steer = 0.0
+        accel = 0.0
+        
+        if keys[pygame.K_LEFT]:
+            steer = -1.0
+        if keys[pygame.K_RIGHT]:
+            steer = 1.0
+        if keys[pygame.K_UP]:
+            accel = 1.0
+        if keys[pygame.K_DOWN]:
+            accel = -1.0
+            
+        self.last_steer_output = steer
+        self.last_accel_output = accel
+        
+        # Desired heading
+        desired_heading = self.heading + steer * self.max_turn_rate
+        
+        # Desired speed
+        personal_max_speed = self.speed_factor * config.MAX_SPEED
+        desired_speed = ((accel + 1.0) / 2.0) * personal_max_speed
+        
+        desired_vx = desired_speed * math.cos(desired_heading)
+        desired_vy = desired_speed * math.sin(desired_heading)
+        
+        self.ax_input = desired_vx - self.vx
+        self.ay_input = desired_vy - self.vy
+        
+        # Clamp acceleration
+        accel_mag = math.hypot(self.ax_input, self.ay_input)
+        if accel_mag > self.max_accel:
+            self.ax_input = (self.ax_input / accel_mag) * self.max_accel
+            self.ay_input = (self.ay_input / accel_mag) * self.max_accel
+
+    def update(self, world_w, world_h, obstacles=None, collision_mode='OFF'):
         """
         Moves the fish based on neural decisions and updates its fitness score.
         """
@@ -254,7 +296,7 @@ class Fish(Agent):
         # STAGE 6 HOOK: Fitness score tracker
         # - Fish gains fitness points for every frame they survive.
         # =====================================================================
-        self.move(self.ax_input, self.ay_input, world_w, world_h)
+        self.move(self.ax_input, self.ay_input, world_w, world_h, obstacles, collision_mode)
         
         # Fitness Accumulation
         self.fitness += config.FITNESS_SURVIVAL_REWARD
@@ -309,12 +351,12 @@ class Predator(Agent):
         super().__init__(
             x=x, y=y, heading=heading, speed_factor=1.0,
             max_speed=config.PREDATOR_MAX_SPEED, max_accel=config.PREDATOR_MAX_ACCELERATION, max_turn_rate=config.PREDATOR_MAX_TURN_RATE,
-            color=(231, 76, 60), length=22, width=12
+            color=(231, 76, 60), length=22, width=12, radius=config.PREDATOR_COLLISION_RADIUS
         )
         self.target_fish = None
         self.target_fish_dist = float('inf')
 
-    def hunt(self, fish_school, world_w, world_h):
+    def hunt(self, fish_school, world_w, world_h, obstacles=None, collision_mode='OFF'):
         """
         Steers toward closest fish, otherwise wanders.
         """
@@ -358,4 +400,4 @@ class Predator(Agent):
             ax = (ax / accel_mag) * self.max_accel
             ay = (ay / accel_mag) * self.max_accel
             
-        self.move(ax, ay, world_w, world_h)
+        self.move(ax, ay, world_w, world_h, obstacles, collision_mode)
