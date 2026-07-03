@@ -13,6 +13,8 @@ from evolution import evolve_population
 from analytics import draw_fitness_graph, draw_hud, draw_help_panel, export_stats_csv
 from persistence import save_genome, load_genome
 from environment.obstacle import get_fixed_obstacles
+from environment.map_generator import generate_procedural_obstacles, find_safe_spawn_position
+
 
 
 # Setup module-level logger
@@ -62,16 +64,20 @@ def main():
     draw_fitness_graph(graph_surface, stats_history)  # Draw initial empty graph
     
     # Initialize static obstacles
-    obstacles = get_fixed_obstacles()
+    use_fixed_map = False
+    obstacles = (get_fixed_obstacles() if use_fixed_map else 
+                 generate_procedural_obstacles(CURRENT_WIDTH, CURRENT_HEIGHT, config.OBSTACLE_COUNT, 
+                                               config.OBSTACLE_MIN_RADIUS, config.OBSTACLE_MAX_RADIUS, 
+                                               config.MIN_GAP_WIDTH, config.MAX_DENSITY))
     
-    # Spawn predator in the center
-    predator = Predator(CURRENT_WIDTH / 2, CURRENT_HEIGHT / 2, random.uniform(0, 2 * math.pi))
+    # Spawn predator in a safe position
+    px, py = find_safe_spawn_position(obstacles, CURRENT_WIDTH, CURRENT_HEIGHT, config.PREDATOR_COLLISION_RADIUS)
+    predator = Predator(px, py, random.uniform(0, 2 * math.pi))
     
     # Spawn Initial Generation (Gen 1 - Random brains)
     fish_school = []
     for _ in range(config.NUM_FISH):
-        x = random.uniform(0, CURRENT_WIDTH)
-        y = random.uniform(0, CURRENT_HEIGHT)
+        x, y = find_safe_spawn_position(obstacles, CURRENT_WIDTH, CURRENT_HEIGHT, config.FISH_COLLISION_RADIUS)
         heading = random.uniform(0, 2 * math.pi)
         speed_factor = random.uniform(config.SPEED_VARIATION_MIN, 1.0)
         color = generate_fish_color()
@@ -108,10 +114,52 @@ def main():
                     if draw_details:
                         debug_mode = not debug_mode
                         logger.info(f"Debug overlay toggled: {debug_mode}")
-                elif event.key == pygame.K_g:
+                elif event.key == pygame.K_v:
                     if draw_details:
                         show_graph = not show_graph
                         logger.info(f"Fitness graph toggled: {show_graph}")
+                elif event.key == pygame.K_g:
+                    if draw_details:
+                        if use_fixed_map:
+                            logger.warning("Cannot regenerate map while in FIXED map mode. Switch to PROCEDURAL mode using [O] first.")
+                        else:
+                            obstacles = generate_procedural_obstacles(CURRENT_WIDTH, CURRENT_HEIGHT, config.OBSTACLE_COUNT, 
+                                                                       config.OBSTACLE_MIN_RADIUS, config.OBSTACLE_MAX_RADIUS, 
+                                                                       config.MIN_GAP_WIDTH, config.MAX_DENSITY)
+                            # Reposition fish safely
+                            for fish in fish_school:
+                                x, y = find_safe_spawn_position(obstacles, CURRENT_WIDTH, CURRENT_HEIGHT, config.FISH_COLLISION_RADIUS)
+                                fish.x = x
+                                fish.y = y
+                            # Reposition predator safely
+                            px, py = find_safe_spawn_position(obstacles, CURRENT_WIDTH, CURRENT_HEIGHT, config.PREDATOR_COLLISION_RADIUS)
+                            predator.x = px
+                            predator.y = py
+                            predator.vx = predator.max_speed * math.cos(random.uniform(0, 2 * math.pi))
+                            predator.vy = predator.max_speed * math.sin(random.uniform(0, 2 * math.pi))
+                            logger.info("Procedural map regenerated and agents repositioned.")
+                elif event.key == pygame.K_o:
+                    if draw_details:
+                        use_fixed_map = not use_fixed_map
+                        if use_fixed_map:
+                            obstacles = get_fixed_obstacles()
+                            logger.info("Switched to FIXED map mode.")
+                        else:
+                            obstacles = generate_procedural_obstacles(CURRENT_WIDTH, CURRENT_HEIGHT, config.OBSTACLE_COUNT, 
+                                                                       config.OBSTACLE_MIN_RADIUS, config.OBSTACLE_MAX_RADIUS, 
+                                                                       config.MIN_GAP_WIDTH, config.MAX_DENSITY)
+                            logger.info("Switched to PROCEDURAL map mode.")
+                        
+                        # Re-spawn agents safely on map switch
+                        for fish in fish_school:
+                            x, y = find_safe_spawn_position(obstacles, CURRENT_WIDTH, CURRENT_HEIGHT, config.FISH_COLLISION_RADIUS)
+                            fish.x = x
+                            fish.y = y
+                        px, py = find_safe_spawn_position(obstacles, CURRENT_WIDTH, CURRENT_HEIGHT, config.PREDATOR_COLLISION_RADIUS)
+                        predator.x = px
+                        predator.y = py
+                        predator.vx = predator.max_speed * math.cos(random.uniform(0, 2 * math.pi))
+                        predator.vy = predator.max_speed * math.sin(random.uniform(0, 2 * math.pi))
                 elif event.key == pygame.K_h:
                     if draw_details:
                         show_help = not show_help
@@ -242,12 +290,19 @@ def main():
             
             # Breed next generation (inject loaded weights if set)
             fish_school = evolve_population(entire_population, loaded_champion_weights, CURRENT_WIDTH, CURRENT_HEIGHT)
+            # Reposition fish safely so they do not spawn inside obstacles
+            for fish in fish_school:
+                x, y = find_safe_spawn_position(obstacles, CURRENT_WIDTH, CURRENT_HEIGHT, config.FISH_COLLISION_RADIUS)
+                fish.x = x
+                fish.y = y
+                
             loaded_champion_weights = None  # Consume champion injection
             dead_fish_pool = []
             
-            # Reset Predator
-            predator.x = CURRENT_WIDTH / 2
-            predator.y = CURRENT_HEIGHT / 2
+            # Reset Predator safely
+            px, py = find_safe_spawn_position(obstacles, CURRENT_WIDTH, CURRENT_HEIGHT, config.PREDATOR_COLLISION_RADIUS)
+            predator.x = px
+            predator.y = py
             predator.target_fish = None
             predator.vx = predator.max_speed * math.cos(random.uniform(0, 2 * math.pi))
             predator.vy = predator.max_speed * math.sin(random.uniform(0, 2 * math.pi))
@@ -274,7 +329,7 @@ def main():
                 
                 screen.fill(config.BG_COLOR)
                 fps_val = clock.get_fps()
-                draw_hud(screen, font, fps_val, generation_num, time_remaining_sec, fish_remaining, best_fitness_current, max(all_time_best_fitness, best_fitness_current), collision_mode, manual_mode)
+                draw_hud(screen, font, fps_val, generation_num, time_remaining_sec, fish_remaining, best_fitness_current, max(all_time_best_fitness, best_fitness_current), collision_mode, manual_mode, "FIXED" if use_fixed_map else "PROCEDURAL")
                 
                 # Training notification indicator
                 train_lbl = font.render("FAST FF-TRAINING ACTIVE (Agent Rendering Suspended)", True, (231, 76, 60))
@@ -361,7 +416,7 @@ def main():
             # Draw HUD Overlays if details are enabled
             if draw_details:
                 fps_val = clock.get_fps()
-                draw_hud(screen, font, fps_val, generation_num, time_remaining_sec, fish_remaining, best_fitness_current, max(all_time_best_fitness, best_fitness_current), collision_mode, manual_mode)
+                draw_hud(screen, font, fps_val, generation_num, time_remaining_sec, fish_remaining, best_fitness_current, max(all_time_best_fitness, best_fitness_current), collision_mode, manual_mode, "FIXED" if use_fixed_map else "PROCEDURAL")
                 
                 # Draw Keybindings Reference Panel if toggled active
                 if show_help:

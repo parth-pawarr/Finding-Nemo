@@ -95,7 +95,7 @@ def draw_fitness_graph(surface, stats_history):
     surface.blit(end_lbl, (width - padding - 40, height - 16))
 
 
-def draw_hud(screen, font, fps, gen, time_rem, fish_rem, best_fit_current, all_time_best, collision_mode='STOP', manual_mode=False):
+def draw_hud(screen, font, fps, gen, time_rem, fish_rem, best_fit_current, all_time_best, collision_mode='STOP', manual_mode=False, map_mode='PROCEDURAL'):
     """
     Renders a unified status details HUD in the top-left corner.
     
@@ -110,9 +110,10 @@ def draw_hud(screen, font, fps, gen, time_rem, fish_rem, best_fit_current, all_t
         all_time_best: All-time highest fitness recorded (float)
         collision_mode: Current collision resolution mode
         manual_mode: Whether manual fish control is active
+        map_mode: Current active map type
     """
     panel_w = 260
-    panel_h = 215
+    panel_h = 235
     
     hud_surface = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
     hud_surface.fill((20, 25, 40, 220))  # Semi-transparent navy panel
@@ -127,7 +128,8 @@ def draw_hud(screen, font, fps, gen, time_rem, fish_rem, best_fit_current, all_t
         ("All-Time Best:", f"{all_time_best:.1f}", (241, 196, 15)),
         ("Mutation Rate/Str:", f"{config.MUTATION_RATE * 100:.0f}% / {config.MUTATION_STRENGTH:.2f}", (155, 89, 182)),
         ("Collision Mode:", f"{collision_mode}", (241, 196, 15) if collision_mode != 'OFF' else (127, 140, 141)),
-        ("Manual Control:", "ACTIVE" if manual_mode else "INACTIVE", (46, 204, 113) if manual_mode else (127, 140, 141))
+        ("Manual Control:", "ACTIVE" if manual_mode else "INACTIVE", (46, 204, 113) if manual_mode else (127, 140, 141)),
+        ("Map Layout:", f"{map_mode}", (241, 196, 15) if map_mode == "PROCEDURAL" else (127, 140, 141))
     ]
     
     y_offset = 10
@@ -156,7 +158,7 @@ def draw_help_panel(screen, font, world_w):
         world_w: Current screen width boundary (float)
     """
     panel_w = 320
-    panel_h = 270
+    panel_h = 310
     
     help_surface = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
     help_surface.fill((20, 25, 40, 230))  # Slate navy background
@@ -170,7 +172,7 @@ def draw_help_panel(screen, font, world_w):
     controls = [
         ("ESC", "Exit simulation"),
         ("D", "Toggle Debug Overlay (hover select details)"),
-        ("G", "Toggle Live Fitness Graph"),
+        ("V", "Toggle Live Fitness Graph"),
         ("S", "Save all-time best genome to disk"),
         ("L", "Load genome to inject Golden Champion"),
         ("E", "Export stats history to CSV"),
@@ -179,7 +181,9 @@ def draw_help_panel(screen, font, world_w):
         ("R", "Toggle Simple Rendering (clean view)"),
         ("H", "Toggle Help Controls panel (this menu)"),
         ("C", "Cycle Collision Mode (OFF / STOP / SLIDE)"),
-        ("M", "Toggle Manual Control Mode (arrow keys)")
+        ("M", "Toggle Manual Control Mode (arrow keys)"),
+        ("G", "Regenerate procedural map"),
+        ("O", "Toggle Map Mode (Fixed / Procedural)")
     ]
     
     y_offset = 35
